@@ -1,0 +1,113 @@
+//@version=6
+indicator("AIOTA Market Structure Suite — Portfolio Excerpt", shorttitle="AIOTA-Structure", overlay=true, max_lines_count=500, max_boxes_count=500, max_labels_count=500)
+
+// LIMITED PORTFOLIO EXCERPT
+// The production indicator is approximately 3,500 lines and contains six analysis modules.
+// Proprietary Smart Money, Trendline, Support/Resistance, Killzone, Break & Retest,
+// and ICT calculation logic is intentionally omitted.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED DISPLAY ENGINE
+// All production modules route event labels through this shared registry.
+// ATR-scaled spacing reduces cross-module collisions without assuming screen pixels.
+// ─────────────────────────────────────────────────────────────────────────────
+grpDisplay = "AIOTA — Display Engine"
+collisionBarWindow = input.int(6, "Label Anti-Overlap: Bar Window", group=grpDisplay)
+collisionAtrMult   = input.float(0.6, "Label Anti-Overlap: Spacing (x ATR)", group=grpDisplay, minval=0.1)
+labelTextSize      = input.string("Small", "Label Text Size", group=grpDisplay, options=["Tiny", "Small", "Normal", "Large"])
+
+maxTrackedLabels = 300
+var array<int>   labelBars   = array.new_int(0)
+var array<float> labelPrices = array.new_float(0)
+var array<int>   labelSides  = array.new_int(0) // +1 above, -1 below
+atrReference = ta.atr(50)
+
+resolvedLabelSize() =>
+    switch labelTextSize
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        => size.large
+
+autoTextColor(color background) =>
+    float luminance = 0.299 * color.r(background) + 0.587 * color.g(background) + 0.114 * color.b(background)
+    luminance > 150 ? color.black : color.white
+
+registerLabel(int labelBar, float labelPrice, int labelSide) =>
+    array.push(labelBars, labelBar)
+    array.push(labelPrices, labelPrice)
+    array.push(labelSides, labelSide)
+    if array.size(labelBars) > maxTrackedLabels
+        array.shift(labelBars)
+        array.shift(labelPrices)
+        array.shift(labelSides)
+
+resolvePosition(float naturalPrice, int side) =>
+    float adjusted = naturalPrice
+    float step = atrReference * collisionAtrMult
+    int tracked = array.size(labelBars)
+    if tracked > 0
+        for pass = 1 to 4
+            for i = 0 to tracked - 1
+                bool sameSide = array.get(labelSides, i) == side
+                bool closeInTime = math.abs(bar_index - array.get(labelBars, i)) <= collisionBarWindow
+                if sameSide and closeInTime
+                    float existing = array.get(labelPrices, i)
+                    float gap = side * (adjusted - existing)
+                    if gap < step
+                        adjusted := existing + side * step
+    adjusted
+
+placeSharedLabel(float naturalPrice, int side, string labelText, color background, string labelStyle) =>
+    float finalPrice = resolvePosition(naturalPrice, side)
+    color textColor = autoTextColor(background)
+    result = label.new(bar_index, finalPrice, text=labelText, xloc=xloc.bar_index, yloc=yloc.price, style=labelStyle, color=background, textcolor=textColor, size=resolvedLabelSize())
+    registerLabel(bar_index, finalPrice, side)
+    result
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED SIGNAL BUS + CONFIGURABLE CONFLUENCE ENGINE
+// Production modules write their bullish/bearish master signals to this bus.
+// ─────────────────────────────────────────────────────────────────────────────
+var bool smartMoneyBull = false
+var bool smartMoneyBear = false
+var bool trendlineBull = false
+var bool trendlineBear = false
+var bool breakRetestBull = false
+var bool breakRetestBear = false
+var bool ictBull = false
+var bool ictBear = false
+
+// Proprietary module calculations are omitted from this public sample.
+
+strategyGroup = "AIOTA — Strategy Builder"
+confluenceWindow = input.int(8, "Confluence Window (bars)", group=strategyGroup, minval=1)
+minimumAgreement = input.int(3, "Minimum Agreeing Modules", group=strategyGroup, minval=2, maxval=4)
+
+smartBullRecent = not na(ta.barssince(smartMoneyBull)) and ta.barssince(smartMoneyBull) <= confluenceWindow
+trendBullRecent = not na(ta.barssince(trendlineBull)) and ta.barssince(trendlineBull) <= confluenceWindow
+retestBullRecent = not na(ta.barssince(breakRetestBull)) and ta.barssince(breakRetestBull) <= confluenceWindow
+ictBullRecent = not na(ta.barssince(ictBull)) and ta.barssince(ictBull) <= confluenceWindow
+
+smartBearRecent = not na(ta.barssince(smartMoneyBear)) and ta.barssince(smartMoneyBear) <= confluenceWindow
+trendBearRecent = not na(ta.barssince(trendlineBear)) and ta.barssince(trendlineBear) <= confluenceWindow
+retestBearRecent = not na(ta.barssince(breakRetestBear)) and ta.barssince(breakRetestBear) <= confluenceWindow
+ictBearRecent = not na(ta.barssince(ictBear)) and ta.barssince(ictBear) <= confluenceWindow
+
+bullAgreement = (smartBullRecent ? 1 : 0) + (trendBullRecent ? 1 : 0) + (retestBullRecent ? 1 : 0) + (ictBullRecent ? 1 : 0)
+bearAgreement = (smartBearRecent ? 1 : 0) + (trendBearRecent ? 1 : 0) + (retestBearRecent ? 1 : 0) + (ictBearRecent ? 1 : 0)
+
+confluenceBull = bullAgreement >= minimumAgreement
+confluenceBear = bearAgreement >= minimumAgreement
+confluenceBullFire = confluenceBull and not confluenceBull[1]
+confluenceBearFire = confluenceBear and not confluenceBear[1]
+
+if confluenceBullFire
+    placeSharedLabel(low, -1, "AIOTA CONFLUENCE BUY", color.green, label.style_label_up)
+if confluenceBearFire
+    placeSharedLabel(high, 1, "AIOTA CONFLUENCE SELL", color.red, label.style_label_down)
+
+alertcondition(confluenceBullFire, "AIOTA Confluence BUY", "Selected modules aligned bullish")
+alertcondition(confluenceBearFire, "AIOTA Confluence SELL", "Selected modules aligned bearish")
+
+// End of limited portfolio excerpt. The complete production implementation is private.
